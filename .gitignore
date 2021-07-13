@@ -1,10 +1,14 @@
+vendor
 *.swp
 *.gor
 *.rpm
 *.dep
+*.deb
 *.pkg
-
+*.exe
+*.pprof
 *.out
+hey
 
 *.bin
 

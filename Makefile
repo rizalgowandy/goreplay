@@ -23,16 +23,19 @@ FPMCOMMON= \
     -s dir \
     -C /tmp/gor-build \
 
-release: release-x64 release-mac
+release: vendor release-x64 release-mac release-windows
+
+vendor:
+	go mod vendor
 
 release-bin:
-	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=amd64  -i $(CONTAINER) go build -o $(BIN_NAME) -tags netgo $(LDFLAGS)
+	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=amd64  -i $(CONTAINER) go build -mod=vendor -o $(BIN_NAME) -tags netgo $(LDFLAGS)
 
 release-bin-mac:
 	GOOS=darwin go build -o $(BIN_NAME) $(MAC_LDFLAGS)
 
 release-x64:
-	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=amd64  -i $(CONTAINER) go build -o $(BIN_NAME) -tags netgo $(LDFLAGS)
+	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=amd64  -i $(CONTAINER) go build -mod=vendor -o $(BIN_NAME) -tags netgo $(LDFLAGS)
 	tar -czf gor_$(VERSION)$(PREFIX)_x64.tar.gz $(BIN_NAME)
 	mkdir -p /tmp/gor-build
 	mv ./$(BIN_NAME) /tmp/gor-build/$(BIN_NAME)
@@ -44,12 +47,12 @@ release-x64:
 	rm -rf /tmp/gor-build
 
 release-x86:
-	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=386 -i $(CONTAINER) go build -o $(BIN_NAME) -tags netgo $(LDFLAGS)
+	docker run -v `pwd`:$(SOURCE_PATH) -t --env GOOS=linux --env GOARCH=386 -i $(CONTAINER) go build -mod=vendor -o $(BIN_NAME) -tags netgo $(LDFLAGS)
 	tar -czf gor_$(VERSION)$(PREFIX)_x86.tar.gz $(BIN_NAME)
 	rm $(BIN_NAME)
 
 release-mac:
-	go build -o $(BIN_NAME) $(MAC_LDFLAGS)
+	go build -mod=vendor -o $(BIN_NAME) $(MAC_LDFLAGS)
 	tar -czf gor_$(VERSION)$(PREFIX)_mac.tar.gz $(BIN_NAME)
 	mkdir -p /tmp/gor-build
 	mv ./$(BIN_NAME) /tmp/gor-build/$(BIN_NAME)
@@ -58,11 +61,25 @@ release-mac:
 	fpm $(FPMCOMMON) -a amd64 -t osxpkg ./=/usr/local/bin
 	rm -rf /tmp/gor-build
 
+release-windows:
+	docker run -it --rm \
+	  -v `pwd`:/go/src/github.com/buger/goreplay \
+	  -w /go/src/github.com/buger/goreplay \
+	  -e CGO_ENABLED=1 \
+	  docker.elastic.co/beats-dev/golang-crossbuild:1.16.4-main \
+	  --build-cmd "make VERSION=$(VERSION) build" \
+	  -p "windows/amd64"
+	mv ./gor ./gor.exe
+	zip gor-$(VERSION)$(PREFIX)_windows.zip ./gor.exe
+	rm -rf ./gor.exe
+
+build:
+	go build -mod=vendor -o $(BIN_NAME) $(LDFLAGS)
 
 install:
 	go install $(MAC_LDFLAGS)
 
-build:
+build-env:
 	docker build -t $(CONTAINER) -f Dockerfile.dev .
 
 profile:
@@ -102,7 +119,7 @@ profile_test:
 
 # Used mainly for debugging, because docker container do not have access to parent machine ports
 run:
-	$(RUN) go run $(LDFLAGS) $(SOURCE) --input-dummy=0 --output-http="http://localhost:9000" --input-raw-track-response --input-raw 127.0.0.1:9000 --verbose --debug --middleware "./examples/middleware/echo.sh" --output-file requests.gor
+	$(RUN) go run $(LDFLAGS) $(SOURCE) --input-dummy=0 --output-http="http://localhost:9000" --input-raw-track-response --input-raw 127.0.0.1:9000 --verbose 0 --middleware "./examples/middleware/echo.sh" --output-file requests.gor
 
 run-2:
 	$(RUN) go run $(LDFLAGS) $(SOURCE) --input-raw :8000 --input-raw-bpf-filter "dst port 8000" --output-stdout --output-http "http://localhost:8000" --input-dummy=0

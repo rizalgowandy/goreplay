@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,16 +53,17 @@ func (protocol *TCPProtocol) String() string {
 // RAWInputConfig represents configuration that can be applied on raw input
 type RAWInputConfig struct {
 	capture.PcapOptions
-	Expire         time.Duration      `json:"input-raw-expire"`
-	CopyBufferSize size.Size          `json:"copy-buffer-size"`
-	Engine         capture.EngineType `json:"input-raw-engine"`
-	TrackResponse  bool               `json:"input-raw-track-response"`
-	Protocol       TCPProtocol        `json:"input-raw-protocol"`
-	RealIPHeader   string             `json:"input-raw-realip-header"`
-	Stats          bool               `json:"input-raw-stats"`
-	quit           chan bool          // Channel used only to indicate goroutine should shutdown
-	host           string
-	port           uint16
+	Expire          time.Duration      `json:"input-raw-expire"`
+	CopyBufferSize  size.Size          `json:"copy-buffer-size"`
+	Engine          capture.EngineType `json:"input-raw-engine"`
+	TrackResponse   bool               `json:"input-raw-track-response"`
+	Protocol        TCPProtocol        `json:"input-raw-protocol"`
+	RealIPHeader    string             `json:"input-raw-realip-header"`
+	Stats           bool               `json:"input-raw-stats"`
+	AllowIncomplete bool               `json:"input-raw-allow-incomplete"`
+	quit            chan bool          // Channel used only to indicate goroutine should shutdown
+	host            string
+	ports           []uint16
 }
 
 // RAWInput used for intercepting traffic for given address
@@ -70,7 +72,7 @@ type RAWInput struct {
 	RAWInputConfig
 	messageStats   []tcp.Stats
 	listener       *capture.Listener
-	message        chan *tcp.Message
+	messageParser  *tcp.MessageParser
 	cancelListener context.CancelFunc
 	closed         bool
 }
@@ -79,24 +81,29 @@ type RAWInput struct {
 func NewRAWInput(address string, config RAWInputConfig) (i *RAWInput) {
 	i = new(RAWInput)
 	i.RAWInputConfig = config
-	i.message = make(chan *tcp.Message, 10000)
 	i.quit = make(chan bool)
-	var host, _port string
-	var err error
-	var port int
-	host, _port, err = net.SplitHostPort(address)
+
+	host, _ports, err := net.SplitHostPort(address)
 	if err != nil {
 		log.Fatalf("input-raw: error while parsing address: %s", err)
 	}
-	if _port != "" {
-		port, err = strconv.Atoi(_port)
+
+	var ports []uint16
+	if _ports != "" {
+		portsStr := strings.Split(_ports, ",")
+
+		for _, portStr := range portsStr {
+			port, err := strconv.Atoi(strings.TrimSpace(portStr))
+			if err != nil {
+				log.Fatalf("parsing port error: %v", err)
+			}
+			ports = append(ports, uint16(port))
+
+		}
 	}
 
-	if err != nil {
-		log.Fatalf("parsing port error: %v", err)
-	}
 	i.host = host
-	i.port = uint16(port)
+	i.ports = ports
 
 	i.listen(address)
 
@@ -110,11 +117,12 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 	select {
 	case <-i.quit:
 		return nil, ErrorStopped
-	case msgTCP = <-i.message:
+	case msgTCP = <-i.messageParser.Messages():
 		msg.Data = msgTCP.Data()
 	}
+
 	var msgType byte = ResponsePayload
-	if msgTCP.IsIncoming {
+	if msgTCP.IsRequest {
 		msgType = RequestPayload
 		if i.RealIPHeader != "" {
 			msg.Data = proto.SetHeader(msg.Data, []byte(i.RealIPHeader), []byte(msgTCP.SrcAddr))
@@ -134,13 +142,14 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 		stat := msgTCP.Stats
 		go i.addStats(stat)
 	}
+	msgTCP.Finalize()
 	msgTCP = nil
 	return &msg, nil
 }
 
 func (i *RAWInput) listen(address string) {
 	var err error
-	i.listener, err = capture.NewListener(i.host, i.port, "", i.Engine, i.TrackResponse)
+	i.listener, err = capture.NewListener(i.host, i.ports, "", i.Engine, i.TrackResponse)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -149,15 +158,15 @@ func (i *RAWInput) listen(address string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pool := tcp.NewMessagePool(i.CopyBufferSize, i.Expire, Debug, i.handler)
-	pool.MatchUUID(i.TrackResponse)
+	i.messageParser = tcp.NewMessageParser(i.CopyBufferSize, i.Expire, i.AllowIncomplete, Debug)
+
 	if i.Protocol == ProtocolHTTP {
-		pool.Start = http1StartHint
-		pool.End = http1EndHint
+		i.messageParser.Start = http1StartHint
+		i.messageParser.End = http1EndHint
 	}
 	var ctx context.Context
 	ctx, i.cancelListener = context.WithCancel(context.Background())
-	errCh := i.listener.ListenBackground(ctx, pool.Handler)
+	errCh := i.listener.ListenBackground(ctx, i.messageParser.PacketHandler)
 	<-i.listener.Reading
 	Debug(1, i)
 	go func() {
@@ -166,12 +175,8 @@ func (i *RAWInput) listen(address string) {
 	}()
 }
 
-func (i *RAWInput) handler(m *tcp.Message) {
-	i.message <- m
-}
-
 func (i *RAWInput) String() string {
-	return fmt.Sprintf("Intercepting traffic from: %s:%d", i.host, i.port)
+	return fmt.Sprintf("Intercepting traffic from: %s:%s", i.host, strings.Join(strings.Fields(fmt.Sprint(i.ports)), ","))
 }
 
 // GetStats returns the stats so far and reset the stats
@@ -206,14 +211,23 @@ func (i *RAWInput) addStats(mStats tcp.Stats) {
 	i.Unlock()
 }
 
-func http1StartHint(pckt *tcp.Packet) (isIncoming, isOutgoing bool) {
-	isIncoming = proto.HasRequestTitle(pckt.Payload)
-	if isIncoming {
-		return
+func http1StartHint(pckt *tcp.Packet) (isRequest, isResponse bool) {
+	if proto.HasRequestTitle(pckt.Payload) {
+		return true, false
 	}
-	return false, proto.HasResponseTitle(pckt.Payload)
+
+	if proto.HasResponseTitle(pckt.Payload) {
+		return false, true
+	}
+
+	// No request or response detected
+	return false, false
 }
 
 func http1EndHint(m *tcp.Message) bool {
-	return proto.HasFullPayload(m.Data(), m)
+	if m.MissingChunk() {
+		return false
+	}
+
+	return proto.HasFullPayload(m, m.PacketData()...)
 }

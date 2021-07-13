@@ -58,6 +58,7 @@ func TestRAWInputIPv4(t *testing.T) {
 		} else {
 			respCounter++
 		}
+
 		wg.Done()
 	})
 
@@ -71,14 +72,18 @@ func TestRAWInputIPv4(t *testing.T) {
 	emitter := NewEmitter()
 	defer emitter.Close()
 	go emitter.Start(plugins, Settings.Middleware)
+
+	// time.Sleep(time.Second)
 	for i := 0; i < 1; i++ {
 		wg.Add(2)
 		_, err = http.Get(addr)
+
 		if err != nil {
 			t.Error(err)
 			return
 		}
 	}
+
 	wg.Wait()
 	const want = 10
 	if reqCounter != respCounter && reqCounter != want {
@@ -228,10 +233,11 @@ func TestInputRAWChunkedEncoding(t *testing.T) {
 
 	originAddr := strings.Replace(origin.Listener.Addr().String(), "[::]", "127.0.0.1", -1)
 	conf := RAWInputConfig{
-		Engine:        capture.EnginePcap,
-		Expire:        time.Second,
-		Protocol:      ProtocolHTTP,
-		TrackResponse: true,
+		Engine:          capture.EnginePcap,
+		Expire:          time.Second,
+		Protocol:        ProtocolHTTP,
+		TrackResponse:   true,
+		AllowIncomplete: true,
 	}
 	input := NewRAWInput(originAddr, conf)
 

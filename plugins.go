@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Message represents data accross plugins
+// Message represents data across plugins
 type Message struct {
 	Meta []byte // metadata
 	Data []byte // actual data
@@ -83,7 +83,6 @@ func (plugins *InOutPlugins) registerPlugin(constructor interface{}, options ...
 		plugins.Outputs = append(plugins.Outputs, w)
 	}
 	plugins.All = append(plugins.All, plugin)
-
 }
 
 // NewPlugins specify and initialize all available plugins
@@ -119,7 +118,7 @@ func NewPlugins() *InOutPlugins {
 	}
 
 	for _, options := range Settings.InputFile {
-		plugins.registerPlugin(NewFileInput, options, Settings.InputFileLoop)
+		plugins.registerPlugin(NewFileInput, options, Settings.InputFileLoop, Settings.InputFileReadDepth, Settings.InputFileMaxWait, Settings.InputFileDryRun)
 	}
 
 	for _, path := range Settings.OutputFile {

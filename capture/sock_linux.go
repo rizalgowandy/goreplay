@@ -1,3 +1,5 @@
+// +build linux
+
 package capture
 
 import (
@@ -44,7 +46,23 @@ type SockRaw struct {
 }
 
 // NewSocket returns new M'maped sock_raw on packet version 2.
-func NewSocket(ifi net.Interface) (*SockRaw, error) {
+func NewSocket(pifi pcap.Interface) (*SockRaw, error) {
+	var ifi net.Interface
+
+	infs, _ := net.Interfaces()
+	found := false
+	for _, i := range infs {
+		if i.Name == pifi.Name {
+			ifi = i
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("can't find matching interface")
+	}
+
 	// sock create
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(ETHALL))
 	if err != nil {
@@ -197,7 +215,7 @@ func (sock *SockRaw) GetSnapLen() int {
 func (sock *SockRaw) SetBPFFilter(expr string) error {
 	sock.mu.Lock()
 	defer sock.mu.Unlock()
-	if len(expr) == 0 {
+	if expr == "" {
 		return unix.SetsockoptInt(sock.fd, unix.SOL_SOCKET, unix.SO_DETACH_FILTER, 0)
 	}
 	filter, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, sock.snaplen, expr)
@@ -217,7 +235,7 @@ func (sock *SockRaw) SetBPFFilter(expr string) error {
 	return unix.SetsockoptSockFprog(sock.fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
 }
 
-// SetPromiscuous sets promiscous mode to the required value. for better result capture on all interfaces instead.
+// SetPromiscuous sets promiscuous mode to the required value. for better result capture on all interfaces instead.
 // If it is enabled, traffic not destined for the interface will also be captured.
 func (sock *SockRaw) SetPromiscuous(b bool) error {
 	sock.mu.Lock()
